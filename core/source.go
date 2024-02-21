@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/containers/image/v5/docker"
 	"github.com/containers/image/v5/types"
@@ -59,6 +60,13 @@ func NewImageSource(pCtx context.Context, registry, repository, tag, username, p
 		}
 	}
 
+	// Set OS and Architecture
+	confPlat := strings.Split(CONF.Platform, "/")
+	confOs := confPlat[0]
+	confArch := confPlat[1]
+	sysctx.OSChoice = confOs
+	sysctx.ArchitectureChoice = confArch
+
 	var rawSource types.ImageSource
 	if tag != "" {
 		// if tag ids empty, will attach to the "latest" tag, and will get a error if "latest" ids not exist
@@ -88,14 +96,14 @@ func (i *ImageSource) GetManifest() ([]byte, string, error) {
 }
 
 // GetBlobInfos get blobs from source image.
-func (i *ImageSource) GetBlobInfos(manifestByte []byte, manifestType string) ([]types.BlobInfo, error) {
+func (i *ImageSource) GetBlobInfos(manifestByte []byte, manifestType string) ([]types.BlobInfo, []byte, error) {
 	if i.source == nil {
-		return nil, fmt.Errorf("cannot get blobs without specfied a tag")
+		return nil, nil, fmt.Errorf("cannot get blobs without specfied a tag")
 	}
 
-	manifestInfoSlice, err := ManifestHandler(manifestByte, manifestType, i)
+	manifestInfoSlice, realManifestByte, err := ManifestHandler(manifestByte, manifestType, i)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// get a Blobs
@@ -112,7 +120,8 @@ func (i *ImageSource) GetBlobInfos(manifestByte []byte, manifestType string) ([]
 		}
 	}
 
-	return srcBlobs, nil
+	return srcBlobs, realManifestByte, nil
+
 }
 
 // GetABlob gets a blob from remote image

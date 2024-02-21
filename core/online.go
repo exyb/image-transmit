@@ -6,6 +6,8 @@ import (
 	"strings"
 	"time"
 
+	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/containers/image/v5/manifest"
 	"github.com/containers/image/v5/pkg/blobinfocache/none"
 	"github.com/pkg/errors"
@@ -83,7 +85,7 @@ func (t *OnlineTask) Run(idx int) error {
 	}
 	t.ctx.Info(I18n.Sprintf("Get manifest from %s", t.srcUrl))
 
-	blobInfos, err := t.source.GetBlobInfos(manifestByte, manifestType)
+	blobInfos, _, err := t.source.GetBlobInfos(manifestByte, manifestType)
 	if err != nil {
 		return errors.New(I18n.Sprintf("Get blob info from %s error: %v", t.srcUrl, err))
 	}
@@ -170,9 +172,37 @@ func (t *OnlineTask) Run(idx int) error {
 		}
 	}
 
-	//Push manifest list
 	if manifestType == manifest.DockerV2ListMediaType {
+		//Push manifest list (docker)
 		manifestSchemaListInfo, err := manifest.Schema2ListFromManifest(manifestByte)
+		if err != nil {
+			return err
+		}
+
+		var subManifestByte []byte
+
+		// push manifest to destination
+		for _, manifestDescriptorElem := range manifestSchemaListInfo.Manifests {
+			subManifestByte, _, err = t.source.source.GetManifest(t.source.ctx, &manifestDescriptorElem.Digest)
+			if err != nil {
+				return errors.New(I18n.Sprintf("Get manifest %v of OS:%s Architecture:%s for manifest list error: %v", manifestDescriptorElem.Digest, manifestDescriptorElem.Platform.OS, manifestDescriptorElem.Platform.Architecture, err))
+			}
+
+			if err := t.destination.PushManifest(subManifestByte); err != nil {
+				return errors.New(I18n.Sprintf("Put manifest to %s error: %v", t.dstUrl, err))
+			}
+		}
+
+		// push manifest list to destination
+		if err := t.destination.PushManifest(manifestByte); err != nil {
+			return errors.New(I18n.Sprintf("Put manifestList to %s error: %v", t.dstUrl, err))
+		}
+
+		t.ctx.Info(I18n.Sprintf("Put manifestList to %s", t.dstUrl))
+
+	} else if manifestType == imgspecv1.MediaTypeImageIndex {
+		// Push manifest list (OCI1)
+		manifestSchemaListInfo, err := manifest.OCI1IndexFromManifest(manifestByte)
 		if err != nil {
 			return err
 		}

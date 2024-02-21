@@ -6,7 +6,9 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,8 +28,8 @@ var (
 	flConfLst *string
 	flConfInc *string
 	flConfImg *string
-	flConfOut *string
 	flConfWat *bool
+	flOpt     *string
 )
 
 func main() {
@@ -69,6 +71,14 @@ func main() {
 	if err != nil {
 		fmt.Print(I18n.Sprintf("Parse cfg.yaml file failed: %v, for instruction visit github.com/wct-devops/image-transmit", err))
 		os.Exit(1)
+	}
+
+	if CONF.Platform == "" {
+		CONF.Platform = "linux/amd64"
+	}
+
+	if CONF.OutPrefix == "" {
+		CONF.OutPrefix = "img"
 	}
 
 	if CONF.MaxConn == 0 {
@@ -117,21 +127,22 @@ func main() {
 	flConfLst = flag.String("lst", "", I18n.Sprintf("Image list file, one image each line"))
 	flConfInc = flag.String("inc", "", I18n.Sprintf("The referred image meta file(*meta.yaml) in increment mode"))
 	flConfImg = flag.String("img", "", I18n.Sprintf("Image meta file to upload(*meta.yaml)"))
-	flConfOut = flag.String("out", "", I18n.Sprintf("Output filename prefix"))
 	flConfWat = flag.Bool("watch", false, I18n.Sprintf("Watch mode"))
+	flOpt = flag.String("opt", "", I18n.Sprintf("Options: override some options in cfg.yaml"))
 
 	flag.Usage = func() {
-		fmt.Println(I18n.Sprintf("Image Transmit-Ghang'e-WhaleCloud DevOps Team"))
-		fmt.Print(I18n.Sprintf("%s [OPTIONS]\n", os.Args[0]))
-		fmt.Print(I18n.Sprintf("Examples: \n"))
-		fmt.Print(I18n.Sprintf("            Save mode:           %s -src=nj -lst=img.lst\n", os.Args[0]))
-		fmt.Print(I18n.Sprintf("            Increment save mode: %s -src=nj -lst=img.lst -inc=img_full_202106122344_meta.yaml\n", os.Args[0]))
-		fmt.Print(I18n.Sprintf("            Transmit mode:       %s -src=nj -lst=img.lst -dst=gz\n", os.Args[0]))
-		fmt.Print(I18n.Sprintf("            Watch mode:          %s -src=nj -lst=img.lst -dst=gz --watch\n", os.Args[0]))
-		fmt.Print(I18n.Sprintf("            Upload mode:         %s -dst=gz -img=img_full_202106122344_meta.yaml [-lst=img.lst]\n", os.Args[0]))
-		fmt.Print(I18n.Sprintf("More description please refer to github.com/wct-devops/image-transmit\n"))
+		fmt.Println(I18n.Sprintf("\n                           Easy Image Transmit Tool"))
+		fmt.Print(I18n.Sprintf("[Usage]: \n"))
+		fmt.Print(I18n.Sprintf("            Save mode(save tarball from registry):  %s -src=nj -lst=img.lst\n", os.Args[0]))
+		fmt.Print(I18n.Sprintf("            Increment save mode:                    %s -src=nj -lst=img.lst -inc=img_full_202106122344_meta.yaml\n", os.Args[0]))
+		fmt.Print(I18n.Sprintf("            Load mode(to docker or ctr):            %s -dst=docker -img=img_full_202106122344_meta.yaml [-lst=img.lst]\n", os.Args[0]))
+		fmt.Print(I18n.Sprintf("            Load mode(to registry):                 %s -dst=gz -img=img_full_202106122344_meta.yaml [-lst=img.lst]\n", os.Args[0]))
+		fmt.Print(I18n.Sprintf("            Transmit mode:                          %s -src=nj -lst=img.lst -dst=gz\n", os.Args[0]))
+		fmt.Print(I18n.Sprintf("            Watch mode:                             %s -src=nj -lst=img.lst -dst=gz --watch\n", os.Args[0]))
+		fmt.Print(I18n.Sprintf("[Options]:\n%s\n", os.Args[0]))
 		flag.PrintDefaults()
 	}
+
 	flag.Parse()
 
 	if len(*flConfSrc) > 0 {
@@ -166,10 +177,6 @@ func main() {
 		}
 	}
 
-	if len(*flConfOut) > 0 {
-		CONF.OutPrefix = *flConfOut
-	}
-
 	var lc *LocalCache
 	if CONF.Cache.Pathname != "" {
 		keepDays := 7
@@ -188,11 +195,49 @@ func main() {
 
 	ctx := NewTaskContext(log, lc, lt)
 	ctx.Reset()
+
+	// override most of the config from command line
+	opts := strings.Split(*flOpt, ",")
+	for _, opt := range opts {
+		keyValue := strings.Split(opt, "=")
+		if len(keyValue) != 2 {
+			continue
+		}
+
+		key := keyValue[0]
+		value := keyValue[1]
+		typeOfYamlCfg := reflect.TypeOf(YamlCfg{})
+		immutable := reflect.ValueOf(CONF)
+		for i := 0; i < typeOfYamlCfg.NumField(); i++ {
+			field := typeOfYamlCfg.Field(i)
+			tag := reflect.StructTag(field.Tag)
+			yamlTag := tag.Get("yaml")
+			// fmt.Printf("field' name is %s, yaml tag is %s\n", field.Name, strings.Split(yamlTag, ","))
+			_, found := findStrInSlice(strings.Split(yamlTag, ","), key)
+			if found {
+				fieldValue := immutable.Elem().FieldByName(field.Name)
+				switch field.Type.Kind() {
+				case reflect.String:
+					fieldValue.SetString(value)
+				case reflect.Int:
+					fieldValue.SetInt(int64(atoi(value)))
+				case reflect.Bool:
+					fieldValue.SetBool(value == "true")
+				}
+			}
+		}
+	}
+
+	if len(CONF.Platform) > 0 {
+		ctx.Platform = CONF.Platform
+	}
+
 	if len(CONF.DingTalk) > 0 {
 		ctx.Notify = NewDingTalkWapper(CONF.DingTalk)
 	}
 
 	if len(*flConfSrc) > 0 && len(*flConfDst) > 0 {
+		// transmit mode: src -> dst
 		err := readImgList(ctx)
 		if err != nil {
 			os.Exit(1)
@@ -206,10 +251,22 @@ func main() {
 			EndAction(ctx)
 		}
 	} else if len(*flConfImg) > 0 && len(*flConfDst) > 0 {
+		// load mode
+		// ignore local filesystem blob validate in dockerSaver
+		if strings.Contains(*flConfImg, "_incr_") {
+			ctx.DockerSaverBlobValidate = true
+		} else {
+			ctx.DockerSaverBlobValidate = false
+		}
+		err := readImgList(ctx)
+		if err != nil {
+			os.Exit(1)
+		}
 		BeginAction(ctx)
 		upload(ctx)
 		EndAction(ctx)
 	} else if len(*flConfSrc) > 0 {
+		// save mode, save image listed in image list
 		err := readImgList(ctx)
 		if err != nil {
 			os.Exit(1)
@@ -232,24 +289,51 @@ func readImgList(ctx *TaskContext) error {
 		getInputList(string(b))
 	} else {
 		var s string
-		for {
-			var l string
-			_, err := fmt.Scanln(&l)
-			if len(l) < 1 || err != nil {
-				break
+
+		done := make(chan bool)
+		go func() {
+			for {
+				var l string
+				_, err := fmt.Scanln(&l)
+				if len(l) < 1 || err != nil {
+					break
+				}
+				s = s + "\n" + l
 			}
-			s = s + "\n" + l
+			done <- true
+		}()
+
+		select {
+		case <-done:
+			if len(s) > 0 {
+				if len(s) > 0 {
+					getInputList(s)
+				}
+			}
+		case <-time.After(100 * time.Microsecond):
 		}
 
-		if len(s) > 0 {
-			getInputList(s)
-		}
 	}
-	if len(imgList) < 1 {
-		return ctx.Errorf(I18n.Sprintf("Empty image list"))
-	}
+
 	ctx.Info(I18n.Sprintf("Get %v images", len(imgList)))
 	return nil
+}
+
+func atoi(s string) int {
+	i, err := strconv.Atoi(s)
+	if err != nil {
+		return 0
+	}
+	return i
+}
+
+func findStrInSlice(slice []string, val string) (int, bool) {
+	for i, item := range slice {
+		if item == val {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 func getInputList(input string) {
@@ -389,7 +473,6 @@ func download(ctx *TaskContext) error {
 		CONF.MaxConn = len(imgList)
 	}
 	c, _ := NewClient(CONF.MaxConn, CONF.Retries, ctx)
-
 	var prefixPathname string
 	var prefixFilename string
 	if len(CONF.OutPrefix) > 0 {
@@ -397,6 +480,8 @@ func download(ctx *TaskContext) error {
 		if prefixPathIdx > 0 {
 			prefixPathname = CONF.OutPrefix[0:prefixPathIdx]
 			prefixFilename = CONF.OutPrefix[prefixPathIdx+1:]
+		} else {
+			prefixFilename = CONF.OutPrefix
 		}
 	}
 
@@ -408,13 +493,14 @@ func download(ctx *TaskContext) error {
 
 	var workName string
 	if len(*flConfInc) > 1 {
-		workName = time.Now().Format("img_incr_200601021504")
+		workName = time.Now().Format("incr_200601021504")
 	} else {
-		workName = time.Now().Format("img_full_200601021504")
+		workName = time.Now().Format("full_200601021504")
 	}
 
+	arch := strings.ToLower(strings.Split(CONF.Platform, "/")[1])
 	if len(prefixFilename) > 0 {
-		workName = prefixFilename + "_" + workName
+		workName = prefixFilename + "_" + arch + "_" + workName
 	}
 
 	ctx.CreateCompressionMetadata(CONF.Compressor)
@@ -506,9 +592,7 @@ func upload(ctx *TaskContext) error {
 	}
 	ctx.Info(I18n.Sprintf("The img file contains %v images:\n%s", len(cm.Manifests), strings.Join(srcImgUrlList, "\n")))
 
-	if len(*flConfLst) > 0 {
-		readImgList(ctx)
-	} else {
+	if len(imgList) == 0 {
 		getInputList(strings.Join(srcImgUrlList, "\n")) // if no input list then take the original
 	}
 

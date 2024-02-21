@@ -51,17 +51,19 @@ func (t *OfflineDownTask) Status() string {
 func (t *OfflineDownTask) Run(tid int) error {
 	srcUrl := fmt.Sprintf("%s/%s:%s", t.is.GetRegistry(), t.is.GetRepository(), t.is.GetTag())
 	defer t.ctx.CompMeta.ClearDoing(tid)
+	// manifest list or index
 	manifestByte, manifestType, err := t.is.GetManifest()
 	if err != nil {
 		return errors.New(I18n.Sprintf("Failed to get manifest from %s error: %v", srcUrl, err))
 	}
 	t.ctx.Info(I18n.Sprintf("Get manifest from %s", srcUrl))
 
-	blobInfos, err := t.is.GetBlobInfos(manifestByte, manifestType)
+	blobInfos, realManifestByte, err := t.is.GetBlobInfos(manifestByte, manifestType)
 	if err != nil {
 		return errors.New(I18n.Sprintf("Get blob info from %s error: %v", srcUrl, err))
 	}
-	t.ctx.CompMeta.AddImage(t.url, string(manifestByte))
+
+	t.ctx.CompMeta.AddImage(t.url, string(realManifestByte))
 
 	for _, b := range blobInfos {
 		begin := time.Now()
@@ -69,8 +71,8 @@ func (t *OfflineDownTask) Run(tid int) error {
 		if t.ctx.Cancel() {
 			return errors.New(I18n.Sprintf("User cancelled..."))
 		}
-
-		if t.ctx.CompMeta.BlobExists(b.Digest.Hex()) || t.ctx.CompMeta.BlobStart(b.Digest.Hex(), tid) {
+		// should export empty layer (b.Size == 32)
+		if (b.Size > 32 && t.ctx.CompMeta.BlobExists(b.Digest.Hex())) || t.ctx.CompMeta.BlobStart(b.Digest.Hex(), tid) {
 			t.ctx.Debug(I18n.Sprintf("Skip blob: %s", ShortenString(b.Digest.String(), 19)))
 			continue
 		}
@@ -286,6 +288,10 @@ func (t *OfflineUploadTask) Run(tid int) error {
 					defer r.Close()
 					rdr, name, size, eof, err := r.ReadFileStreamByName(b.Digest.Hex())
 					if eof {
+						// Incre dockerSave mode, consider eof as found
+						if dockerSaver != nil && t.ctx.DockerSaverBlobValidate {
+							found = true
+						}
 						continue
 					}
 					if err != nil {
@@ -299,10 +305,15 @@ func (t *OfflineUploadTask) Run(tid int) error {
 				}
 
 				if reader == nil {
+					if dockerSaver != nil && t.ctx.DockerSaverBlobValidate {
+						found = true
+					}
 					continue
 				}
 
 				if dockerSaver != nil {
+					// Will not check blob exists in local
+					// TODO: Check in local docker by docker client
 					if i == 0 {
 						dockerSaver.AppendFileStream(b.Digest.Hex()+".json", b.Size, reader)
 					} else {
@@ -311,6 +322,7 @@ func (t *OfflineUploadTask) Run(tid int) error {
 					found = true
 					break
 				} else {
+
 					begin := time.Now()
 					err = t.ids.PutABlob(ioutil.NopCloser(reader), b)
 					if err != nil {

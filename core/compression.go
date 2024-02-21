@@ -17,6 +17,8 @@ import (
 
 	log "github.com/cihub/seelog"
 	"github.com/containers/image/v5/types"
+
+	// dockerClient "github.com/docker/docker/client"
 	"github.com/klauspost/compress/zstd"
 	"github.com/pierrec/lz4"
 	"github.com/ulikunitz/xz"
@@ -389,6 +391,7 @@ type DockerSaver struct {
 	wait         *sync.Mutex
 	repositories map[string]map[string]string
 	manifests    [](map[string]interface{})
+	// dockerCli    *dockerClient.Client
 }
 
 func NewDockerSaver(ctx *TaskContext, target string) *DockerSaver {
@@ -401,6 +404,10 @@ func NewDockerSaver(ctx *TaskContext, target string) *DockerSaver {
 	if target == "docker" || target == "ctr" {
 		var cmd *exec.Cmd
 		if target == "docker" {
+			// dockerCli, err := dockerClient.NewClientWithOpts(client.FromEnv)
+			// if err != nil {
+			// 	panic(err)
+			// }
 			cmd = exec.Command("docker", "load")
 		} else {
 			cmd = exec.Command("ctr", "image", "import", "/dev/stdin")
@@ -422,7 +429,9 @@ func NewDockerSaver(ctx *TaskContext, target string) *DockerSaver {
 				log.Error(err)
 			}
 		}()
+
 		tarWriter = tar.NewWriter(cmdWriter)
+
 	} else {
 		cmdWriter, err = os.Create(target)
 		if err != nil {
@@ -438,6 +447,7 @@ func NewDockerSaver(ctx *TaskContext, target string) *DockerSaver {
 		ctx:          ctx,
 		wait:         wait,
 		repositories: repositories,
+		// dockerCli:    dockerCli,
 	}
 }
 

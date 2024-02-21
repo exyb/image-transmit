@@ -25,6 +25,7 @@ type Repo struct {
 type YamlCfg struct {
 	SrcRepos   []Repo           `yaml:"source,omitempty"`
 	DstRepos   []Repo           `yaml:"target,omitempty"`
+	Platform   string           `yaml:"platform,omitempty"`
 	MaxConn    int              `yaml:"maxconn,omitempty"`
 	Retries    int              `yaml:"retries,omitempty"`
 	SingleFile bool             `yaml:"singlefile,omitempty"`
@@ -69,6 +70,11 @@ func GenRepoUrl(srcReg string, dstReg string, dstRepo string, rawURL string) (sr
 
 	if srcReg == "" { //upload mode we keep the original URL
 		src = strings.TrimSpace(rawSrcURL)
+	}
+
+	if !strings.HasPrefix(srcReg, "https://hub.docker.com") {
+		srcReg = strings.TrimPrefix(
+			strings.TrimPrefix(strings.TrimSpace(srcReg), "http://"), "https://")
 	}
 
 	rawSrcURL =

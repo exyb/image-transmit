@@ -9,30 +9,32 @@ import (
 )
 
 type TaskContext struct {
-	log          CtxLogger
-	byteDown     int64
-	byteUp       int64
-	timeDown     time.Duration
-	timeUp       time.Duration
-	secStart     int64
-	secEnd       int64
-	parallelism  int
-	failedTask   int
-	invalidTask  int
-	totalTask    int
-	waitTask     int
-	statChan     chan int
-	Cache        *LocalCache
-	Temp         *LocalTemp
-	History      *History
-	TarWriter    []*ImageCompressedTarWriter
-	SingleWriter *SingleTarWriter
-	CompMeta     *CompressionMetadata
-	SquashfsTar  *SquashfsTar
-	Context      context.Context
-	CancelFunc   context.CancelFunc
-	Notify       Notify
-	DockerTarget string
+	log                     CtxLogger
+	byteDown                int64
+	byteUp                  int64
+	timeDown                time.Duration
+	timeUp                  time.Duration
+	secStart                int64
+	secEnd                  int64
+	parallelism             int
+	failedTask              int
+	invalidTask             int
+	totalTask               int
+	waitTask                int
+	statChan                chan int
+	Cache                   *LocalCache
+	Temp                    *LocalTemp
+	History                 *History
+	TarWriter               []*ImageCompressedTarWriter
+	SingleWriter            *SingleTarWriter
+	CompMeta                *CompressionMetadata
+	SquashfsTar             *SquashfsTar
+	Context                 context.Context
+	CancelFunc              context.CancelFunc
+	Notify                  Notify
+	DockerTarget            string
+	Platform                string
+	DockerSaverBlobValidate bool
 }
 
 func NewTaskContext(log CtxLogger, lc *LocalCache, lt *LocalTemp) *TaskContext {
@@ -196,7 +198,7 @@ func (t *TaskContext) GetStatus() string {
 			totalSec = time.Now().Unix() - t.secStart
 		}
 	}
-	return fmt.Sprint(I18n.Sprintf("Invalid:%v All:%v OK:%v Err:%v Doing:%v Speed:v%s/s ^%s/s Total:v%s ^%s Time:%s",
-		t.invalidTask, t.totalTask, t.totalTask-t.waitTask-t.failedTask-t.parallelism, t.failedTask,
+	return fmt.Sprint(I18n.Sprintf("All:%v Invalid:%v OK:%v Err:%v Doing:%v Speed:↓%s/s ↑%s/s Total:↓%s ↑%s Time:%s",
+		t.totalTask, t.invalidTask, t.totalTask-t.waitTask-t.failedTask-t.parallelism, t.failedTask,
 		t.parallelism, FormatByteSize(int64(float64(t.byteDown)/(float64(t.timeDown)/float64(time.Second)))), FormatByteSize(int64(float64(t.byteUp)/(float64(t.timeUp)/float64(time.Second)))), FormatByteSize(t.byteDown), FormatByteSize(t.byteUp), FormatSeconds(totalSec)))
 }
