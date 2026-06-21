@@ -85,7 +85,7 @@ func (t *OnlineTask) Run(idx int) error {
 	}
 	t.ctx.Info(I18n.Sprintf("Get manifest from %s", t.srcUrl))
 
-	blobInfos, _, err := t.source.GetBlobInfos(manifestByte, manifestType)
+	blobInfos, _, _, err := t.source.GetBlobInfos(manifestByte, manifestType)
 	if err != nil {
 		return errors.New(I18n.Sprintf("Get blob info from %s error: %v", t.srcUrl, err))
 	}

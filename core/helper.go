@@ -18,26 +18,29 @@ type Repo struct {
 	Name       string `yaml:"name,omitempty"`
 	User       string `yaml:"user"`
 	Registry   string `yaml:"registry"`
+	Insecure   bool   `yaml:"insecure,omitempty"`
 	Password   string `yaml:"password"`
 	Repository string `yaml:"repository,omitempty"`
 }
 
 type YamlCfg struct {
-	SrcRepos   []Repo           `yaml:"source,omitempty"`
-	DstRepos   []Repo           `yaml:"target,omitempty"`
-	Platform   string           `yaml:"platform,omitempty"`
-	MaxConn    int              `yaml:"maxconn,omitempty"`
-	Retries    int              `yaml:"retries,omitempty"`
-	SingleFile bool             `yaml:"singlefile,omitempty"`
-	DockerFile bool             `yaml:"dockerfile,omitempty"`
-	Compressor string           `yaml:"compressor,omitempty"`
-	Squashfs   string           `yaml:"squashfs,omitempty"`
-	Cache      LocalCache       `yaml:"cache,omitempty"`
-	Lang       string           `yaml:"lang,omitempty"`
-	KeepTemp   bool             `yaml:"keeptemp,omitempty"`
-	OutPrefix  string           `yaml:"outprefix,omitempty"`
-	Interval   int              `yaml:"interval,omitempty"`
-	DingTalk   []DingTalkAccess `yaml:"dingtalk,omitempty"`
+	SrcRepos     []Repo           `yaml:"source,omitempty"`
+	DstRepos     []Repo           `yaml:"target,omitempty"`
+	Platform     string           `yaml:"platform,omitempty"`
+	MaxConn      int              `yaml:"maxconn,omitempty"`
+	Retries      int              `yaml:"retries,omitempty"`
+	SingleFile   bool             `yaml:"singlefile,omitempty"`
+	DockerFile   bool             `yaml:"dockerfile,omitempty"`
+	Compressor   string           `yaml:"compressor,omitempty"`
+	Squashfs     string           `yaml:"squashfs,omitempty"`
+	Cache        LocalCache       `yaml:"cache,omitempty"`
+	Lang         string           `yaml:"lang,omitempty"`
+	KeepTemp     bool             `yaml:"keeptemp,omitempty"`
+	OutPrefix    string           `yaml:"outprefix,omitempty"`
+	Interval     int              `yaml:"interval,omitempty"`
+	DingTalk     []DingTalkAccess `yaml:"dingtalk,omitempty"`
+	OutputFormat string           `yaml:"outputformat,omitempty"`
+	LocalStore   string           `yaml:"localstore,omitempty"`
 }
 
 func CheckInvalidChar(text string) bool {

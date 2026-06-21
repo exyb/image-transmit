@@ -96,31 +96,29 @@ func (i *ImageSource) GetManifest() ([]byte, string, error) {
 }
 
 // GetBlobInfos get blobs from source image.
-func (i *ImageSource) GetBlobInfos(manifestByte []byte, manifestType string) ([]types.BlobInfo, []byte, error) {
+func (i *ImageSource) GetBlobInfos(manifestByte []byte, manifestType string) ([]types.BlobInfo, []byte, string, error) {
 	if i.source == nil {
-		return nil, nil, fmt.Errorf("cannot get blobs without specfied a tag")
+		return nil, nil, "", fmt.Errorf("cannot get blobs without specfied a tag")
 	}
 
-	manifestInfoSlice, realManifestByte, err := ManifestHandler(manifestByte, manifestType, i)
+	manifestInfoSlice, realManifestByte, realManifestType, err := ManifestHandler(manifestByte, manifestType, i)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, "", err
 	}
 
-	// get a Blobs
 	srcBlobs := []types.BlobInfo{}
 	for _, manifestInfo := range manifestInfoSlice {
 		blobInfos := manifestInfo.LayerInfos()
 		for _, l := range blobInfos {
 			srcBlobs = append(srcBlobs, l.BlobInfo)
 		}
-		// append config blob info
 		configBlob := manifestInfo.ConfigInfo()
 		if configBlob.Digest != "" {
 			srcBlobs = append(srcBlobs, configBlob)
 		}
 	}
 
-	return srcBlobs, realManifestByte, nil
+	return srcBlobs, realManifestByte, realManifestType, nil
 
 }
 

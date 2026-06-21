@@ -35,6 +35,8 @@ type TaskContext struct {
 	DockerTarget            string
 	Platform                string
 	DockerSaverBlobValidate bool
+	OCILayout               *OCILayout
+	StoreFormat             string
 }
 
 func NewTaskContext(log CtxLogger, lc *LocalCache, lt *LocalTemp) *TaskContext {
@@ -108,6 +110,8 @@ func (t *TaskContext) Reset() {
 	t.TarWriter = nil
 	t.CompMeta = nil
 	t.SquashfsTar = nil
+	t.OCILayout = nil
+	t.StoreFormat = ""
 	t.Context, t.CancelFunc = context.WithCancel(context.Background())
 }
 
@@ -139,6 +143,13 @@ func (t *TaskContext) CreateSingleWriter(pathname string, filename string, compr
 func (t *TaskContext) CreateCompressionMetadata(compressor string) error {
 	var err error
 	t.CompMeta, err = NewCompressionMetadata(compressor)
+	return err
+}
+
+func (t *TaskContext) CreateOCILayout(rootPath string) error {
+	var err error
+	t.OCILayout, err = NewOCILayout(rootPath)
+	t.StoreFormat = "oci"
 	return err
 }
 

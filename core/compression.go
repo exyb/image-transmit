@@ -86,7 +86,7 @@ func (c *CompressionMetadata) ClearDoing(tid int) {
 	}
 }
 
-func (c *CompressionMetadata) AddImage(name string, manifest string) {
+func (c *CompressionMetadata) AddImageManifest(name string, manifest string) {
 	c.m.Lock()
 	defer c.m.Unlock()
 	c.Manifests[name] = manifest
@@ -494,12 +494,14 @@ func (d *DockerSaver) AppendFileStream(filename string, size int64, reader io.Re
 }
 
 func GetBlobSuffix(b types.BlobInfo) string {
-	// skip some empty gzip layers or tar-split will failed, and lots of empty HEXs here, using size more safe
-	if strings.HasSuffix(b.MediaType, "tar.gzip") && b.Size > 32 {
+	mt := b.MediaType
+	if (strings.HasSuffix(mt, "tar.gzip") || strings.HasSuffix(mt, "tar+gzip")) && b.Size > 32 {
 		return ".tar.gz"
-	} else if strings.HasSuffix(b.MediaType, "tar") {
+	} else if strings.HasSuffix(mt, "tar+zstd") && b.Size > 32 {
+		return ".tar.zst"
+	} else if strings.HasSuffix(mt, "tar") {
 		return ".tar"
-	} else if strings.HasSuffix(b.MediaType, "json") {
+	} else if strings.HasSuffix(mt, "json") {
 		return ".json"
 	} else {
 		return ".raw"

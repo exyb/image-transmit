@@ -14,20 +14,23 @@ import (
 	log "github.com/cihub/seelog"
 	"github.com/containers/image/v5/types"
 	"github.com/opencontainers/go-digest"
+	imgspecv1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/pkg/errors"
 )
 
 type OfflineDownTask struct {
-	ctx *TaskContext
-	url string
-	is  *ImageSource
+	ctx    *TaskContext
+	url    string
+	rawUrl string
+	is     *ImageSource
 }
 
-func NewOfflineDownTask(ctx *TaskContext, url string, is *ImageSource) Task {
+func NewOfflineDownTask(ctx *TaskContext, url string, rawUrl string, is *ImageSource) Task {
 	return &OfflineDownTask{
-		ctx: ctx,
-		url: url,
-		is:  is,
+		ctx:    ctx,
+		url:    url,
+		rawUrl: rawUrl,
+		is:     is,
 	}
 }
 
@@ -58,12 +61,30 @@ func (t *OfflineDownTask) Run(tid int) error {
 	}
 	t.ctx.Info(I18n.Sprintf("Get manifest from %s", srcUrl))
 
-	blobInfos, realManifestByte, err := t.is.GetBlobInfos(manifestByte, manifestType)
+	blobInfos, realManifestByte, realManifestType, err := t.is.GetBlobInfos(manifestByte, manifestType)
 	if err != nil {
 		return errors.New(I18n.Sprintf("Get blob info from %s error: %v", srcUrl, err))
 	}
 
-	t.ctx.CompMeta.AddImage(t.url, string(realManifestByte))
+	t.ctx.CompMeta.AddImageManifest(t.rawUrl, string(realManifestByte))
+
+	if t.ctx.OCILayout != nil {
+		manifestDigest := digest.FromBytes(realManifestByte)
+		if err := t.ctx.OCILayout.WriteBlob(manifestDigest, bytes.NewReader(realManifestByte), int64(len(realManifestByte))); err != nil {
+			return errors.New(I18n.Sprintf("Write manifest blob to OCI layout failed: %v", err))
+		}
+		desc := imgspecv1.Descriptor{
+			MediaType: realManifestType,
+			Digest:    manifestDigest,
+			Size:      int64(len(realManifestByte)),
+			Annotations: map[string]string{
+				imgspecv1.AnnotationRefName: t.rawUrl,
+			},
+		}
+		if err := t.ctx.OCILayout.AddManifest(desc); err != nil {
+			return errors.New(I18n.Sprintf("Add manifest to OCI index failed: %v", err))
+		}
+	}
 
 	for _, b := range blobInfos {
 		begin := time.Now()
@@ -72,9 +93,21 @@ func (t *OfflineDownTask) Run(tid int) error {
 			return errors.New(I18n.Sprintf("User cancelled..."))
 		}
 		// should export empty layer (b.Size == 32)
-		if (b.Size > 32 && t.ctx.CompMeta.BlobExists(b.Digest.Hex())) || t.ctx.CompMeta.BlobStart(b.Digest.Hex(), tid) {
-			t.ctx.Debug(I18n.Sprintf("Skip blob: %s", ShortenString(b.Digest.String(), 19)))
-			continue
+		if t.ctx.OCILayout != nil {
+			if b.Size > 32 && (t.ctx.OCILayout.BlobExists(b.Digest) || t.ctx.CompMeta.BlobExists(b.Digest.Hex())) {
+				t.ctx.Debug(I18n.Sprintf("Skip blob (exists in OCI layout): %s", ShortenString(b.Digest.String(), 19)))
+				t.ctx.CompMeta.BlobDone(b.Digest.Hex(), t.rawUrl)
+				continue
+			}
+			if t.ctx.CompMeta.BlobStart(b.Digest.Hex(), tid) {
+				t.ctx.Debug(I18n.Sprintf("Skip blob: %s", ShortenString(b.Digest.String(), 19)))
+				continue
+			}
+		} else {
+			if (b.Size > 32 && t.ctx.CompMeta.BlobExists(b.Digest.Hex())) || t.ctx.CompMeta.BlobStart(b.Digest.Hex(), tid) {
+				t.ctx.Debug(I18n.Sprintf("Skip blob: %s", ShortenString(b.Digest.String(), 19)))
+				continue
+			}
 		}
 
 		blob, size, err := t.is.GetABlob(b)
@@ -82,98 +115,106 @@ func (t *OfflineDownTask) Run(tid int) error {
 			return errors.New(I18n.Sprintf("Get blob %s(%v) from %s failed: %v", b.Digest.String(), FormatByteSize(size), srcUrl, err))
 		}
 		t.ctx.Debug(I18n.Sprintf("Get a blob %s(%v) from %s success", ShortenString(b.Digest.String(), 19), FormatByteSize(size), srcUrl))
-		blobName := b.Digest.Hex() + GetBlobSuffix(b)
 
-		if t.ctx.SquashfsTar != nil {
-			if t.ctx.Cache != nil {
-				matched, filename := t.ctx.Cache.Match(blobName, size)
-				if !matched {
-					r, w, _ := t.ctx.Cache.SaveStream(blobName, blob)
-					err := t.ctx.SquashfsTar.AppendFileStream(blobName, size, r)
-					w.Close()
-					if err != nil {
-						return errors.New(I18n.Sprintf("Save Stream file to cache failed: %v", err))
-					}
-				} else {
-					blob.Close()
-					r, err := t.ctx.Cache.Reuse(blobName)
-					t.ctx.Debug(I18n.Sprintf("Reuse cache: %s", filename))
-					netBytes = 0
-					if err != nil {
-						return errors.New(I18n.Sprintf("Read file from cache failed: %v", err))
-					}
-					err = t.ctx.SquashfsTar.AppendFileStream(blobName, size, r)
-					if err != nil {
-						return err
-					}
-				}
-			} else {
-				err = t.ctx.SquashfsTar.AppendFileStream(blobName, size, blob)
-				if err != nil {
-					return err
-				}
-			}
-		} else if t.ctx.SingleWriter != nil {
-			if t.ctx.Cache != nil {
-				matched, filename := t.ctx.Cache.Match(blobName, size)
-				if !matched {
-					var err error
-					filename, err = t.ctx.Cache.SaveFile(blobName, blob, size)
-					if err != nil {
-						return errors.New(I18n.Sprintf("Save Stream file to cache failed: %v", err))
-					}
-				} else {
-					t.ctx.Debug(I18n.Sprintf("Reuse cache %s", filename))
-					netBytes = 0
-					blob.Close()
-				}
-				t.ctx.SingleWriter.PutFile(filename)
-				t.ctx.Debug(I18n.Sprintf("Put file to archive: %s", filename))
-			} else {
-				filename, err := t.ctx.Temp.SaveFile(blobName, blob, size)
-				if err != nil {
-					return errors.New(I18n.Sprintf("Save Stream file to temp failed: %v", err))
-				}
-				t.ctx.SingleWriter.PutFile(filename)
-				t.ctx.Debug(I18n.Sprintf("Put file to archive: %s", filename))
+		if t.ctx.OCILayout != nil {
+			if err := t.ctx.OCILayout.WriteBlob(b.Digest, blob, size); err != nil {
+				return errors.New(I18n.Sprintf("Write blob %s to OCI layout failed: %v", b.Digest.String(), err))
 			}
 		} else {
-			tar := t.ctx.TarWriter[tid]
-			defer tar.Flush()
-			if t.ctx.Cache != nil {
-				matched, filename := t.ctx.Cache.Match(blobName, size)
-				if !matched {
-					r, w, _ := t.ctx.Cache.SaveStream(blobName, blob)
-					err = tar.AppendFileStream(blobName, size, r)
-					w.Close()
-					if err != nil {
-						return err
+			blobName := b.Digest.Hex() + GetBlobSuffix(b)
+
+			if t.ctx.SquashfsTar != nil {
+				if t.ctx.Cache != nil {
+					matched, filename := t.ctx.Cache.Match(blobName, size)
+					if !matched {
+						r, w, _ := t.ctx.Cache.SaveStream(blobName, blob)
+						err := t.ctx.SquashfsTar.AppendFileStream(blobName, size, r)
+						w.Close()
+						if err != nil {
+							return errors.New(I18n.Sprintf("Save Stream file to cache failed: %v", err))
+						}
+					} else {
+						blob.Close()
+						r, err := t.ctx.Cache.Reuse(blobName)
+						t.ctx.Debug(I18n.Sprintf("Reuse cache: %s", filename))
+						netBytes = 0
+						if err != nil {
+							return errors.New(I18n.Sprintf("Read file from cache failed: %v", err))
+						}
+						err = t.ctx.SquashfsTar.AppendFileStream(blobName, size, r)
+						if err != nil {
+							return err
+						}
 					}
 				} else {
-					blob.Close()
-					r, err := t.ctx.Cache.Reuse(blobName)
-					t.ctx.Debug(I18n.Sprintf("Reuse cache: %s", filename))
-					netBytes = 0
-					if err != nil {
-						return errors.New(I18n.Sprintf("Read file from cache failed: %v", err))
-					}
-					err = tar.AppendFileStream(blobName, size, r)
+					err = t.ctx.SquashfsTar.AppendFileStream(blobName, size, blob)
 					if err != nil {
 						return err
 					}
 				}
+			} else if t.ctx.SingleWriter != nil {
+				if t.ctx.Cache != nil {
+					matched, filename := t.ctx.Cache.Match(blobName, size)
+					if !matched {
+						var err error
+						filename, err = t.ctx.Cache.SaveFile(blobName, blob, size)
+						if err != nil {
+							return errors.New(I18n.Sprintf("Save Stream file to cache failed: %v", err))
+						}
+					} else {
+						t.ctx.Debug(I18n.Sprintf("Reuse cache %s", filename))
+						netBytes = 0
+						blob.Close()
+					}
+					t.ctx.SingleWriter.PutFile(filename)
+					t.ctx.Debug(I18n.Sprintf("Put file to archive: %s", filename))
+				} else {
+					filename, err := t.ctx.Temp.SaveFile(blobName, blob, size)
+					if err != nil {
+						return errors.New(I18n.Sprintf("Save Stream file to temp failed: %v", err))
+					}
+					t.ctx.SingleWriter.PutFile(filename)
+					t.ctx.Debug(I18n.Sprintf("Put file to archive: %s", filename))
+				}
 			} else {
-				err = tar.AppendFileStream(blobName, size, blob)
-				if err != nil {
-					return err
+				tar := t.ctx.TarWriter[tid]
+				defer tar.Flush()
+				if t.ctx.Cache != nil {
+					matched, filename := t.ctx.Cache.Match(blobName, size)
+					if !matched {
+						r, w, _ := t.ctx.Cache.SaveStream(blobName, blob)
+						err = tar.AppendFileStream(blobName, size, r)
+						w.Close()
+						if err != nil {
+							return err
+						}
+					} else {
+						blob.Close()
+						r, err := t.ctx.Cache.Reuse(blobName)
+						t.ctx.Debug(I18n.Sprintf("Reuse cache: %s", filename))
+						netBytes = 0
+						if err != nil {
+							return errors.New(I18n.Sprintf("Read file from cache failed: %v", err))
+						}
+						err = tar.AppendFileStream(blobName, size, r)
+						if err != nil {
+							return err
+						}
+					}
+				} else {
+					err = tar.AppendFileStream(blobName, size, blob)
+					if err != nil {
+						return err
+					}
 				}
 			}
 		}
 		if netBytes > 0 {
 			t.ctx.StatDown(netBytes, time.Since(begin))
 		}
-		t.ctx.CompMeta.BlobDone(b.Digest.Hex(), t.url)
+		t.ctx.CompMeta.BlobDone(b.Digest.Hex(), t.rawUrl)
 	}
+
 	return nil
 }
 
@@ -213,12 +254,27 @@ func (t *OfflineUploadTask) Status() string {
 }
 
 func (t *OfflineUploadTask) Run(tid int) error {
-	manifestJson := t.ctx.CompMeta.Manifests[t.url]
-	m := Manifest{}
-	manifestByte := []byte(manifestJson)
-	err := json.Unmarshal(manifestByte, &m)
-	if err != nil {
-		return fmt.Errorf(I18n.Sprintf("Manifest format error: %v, manifest: %s", err, manifestJson))
+	var manifestByte []byte
+	var m Manifest
+	var err error
+
+	if t.ctx.OCILayout != nil {
+		desc, mb, err := t.ctx.OCILayout.FindManifestByRef(t.url)
+		if err != nil {
+			return fmt.Errorf(I18n.Sprintf("Find manifest for %s in OCI layout error: %v", t.url, err))
+		}
+		manifestByte = mb
+		if err := json.Unmarshal(manifestByte, &m); err != nil {
+			return fmt.Errorf(I18n.Sprintf("Manifest format error: %v", err))
+		}
+		_ = desc
+	} else {
+		manifestJson := t.ctx.CompMeta.Manifests[t.url]
+		manifestByte = []byte(manifestJson)
+		err = json.Unmarshal(manifestByte, &m)
+		if err != nil {
+			return fmt.Errorf(I18n.Sprintf("Manifest format error: %v, manifest: %s", err, manifestJson))
+		}
 	}
 
 	var blobs []types.BlobInfo
@@ -245,93 +301,122 @@ func (t *OfflineUploadTask) Run(tid int) error {
 			t.ctx.Debug(I18n.Sprintf("Blob %s(%v) has been pushed to %s, will not be pulled", ShortenString(b.Digest.String(), 19), FormatByteSize(b.Size), dstUrl))
 		} else {
 			var found bool = false
-			for k := range t.ctx.CompMeta.Datafiles {
-				var reader io.Reader
-				var netBytes int64
-				if t.ctx.SquashfsTar != nil {
-					rawRdr, err := t.ctx.SquashfsTar.GetFileStream(b.Digest.Hex())
-					if err != nil {
-						return err
-					}
-					layerHash := sha256.New()
-					rsw := NewReaderSumWrapper(rawRdr)
-					io.Copy(layerHash, rsw)
+			var reader io.Reader
+			var netBytes int64
 
-					reader, err = t.ctx.SquashfsTar.GetFileStream(b.Digest.Hex())
-					if err != nil {
-						return err
-					}
-
-					d, _ := digest.Parse("sha256:" + hex.EncodeToString(layerHash.Sum(nil)))
-					if b.Digest.Hex() != d.Hex() && dockerSaver == nil { // TODO avoid some failure cases, but not know why inconsist happened
-						log.Warnf("Update digest from %v to %v", b.Digest.Hex(), d.Hex())
-						log.Warnf("Update digest from %v to %v", b.Size, rsw.Size)
-						n := new(types.BlobInfo)
-						tmpBytes, _ := json.Marshal(b)
-						json.Unmarshal(tmpBytes, n)
-						n.Digest = d
-						n.Size = rsw.Size
-						start := bytes.Index(manifestByte, []byte(b.Digest.String()))
-						begIdx := bytes.LastIndex(manifestByte[0:start], []byte{'{'})
-						endIdx := bytes.Index(manifestByte[start:], []byte{'}'})
-						oldBytes := manifestByte[begIdx : start+endIdx]
-						newBytes := bytes.ReplaceAll(oldBytes, []byte(b.Digest.String()), []byte(n.Digest.String()))
-						newBytes = bytes.ReplaceAll(newBytes, []byte(fmt.Sprintf(": %v", b.Size)), []byte(fmt.Sprintf(": %v", n.Size)))
-						manifestByte = bytes.ReplaceAll(manifestByte, oldBytes, newBytes)
-						b = *n
-					}
-				} else {
-					r, err := NewImageCompressedTarReader(filepath.Join(t.path, k), t.ctx.CompMeta.Compressor)
-					if err != nil {
-						return err
-					}
-					defer r.Close()
-					rdr, name, size, eof, err := r.ReadFileStreamByName(b.Digest.Hex())
-					if eof {
-						// Incre dockerSave mode, consider eof as found
-						if dockerSaver != nil && t.ctx.DockerSaverBlobValidate {
-							found = true
-						}
-						continue
-					}
-					if err != nil {
-						return err
-					}
-					if size != b.Size {
-						return fmt.Errorf(I18n.Sprintf("Blob %s size mismatch, size in meta: %v, size in tar: %v", name, b.Size, size))
-					}
-					reader = rdr
-					netBytes = size
+			if t.ctx.OCILayout != nil {
+				rdr, err := t.ctx.OCILayout.OpenBlob(b.Digest)
+				if err != nil {
+					return fmt.Errorf(I18n.Sprintf("Open blob %s from OCI layout error: %v", b.Digest.String(), err))
 				}
-
-				if reader == nil {
-					if dockerSaver != nil && t.ctx.DockerSaverBlobValidate {
-						found = true
-					}
-					continue
-				}
-
+				reader = rdr
+				netBytes = b.Size
 				if dockerSaver != nil {
-					// Will not check blob exists in local
-					// TODO: Check in local docker by docker client
 					if i == 0 {
 						dockerSaver.AppendFileStream(b.Digest.Hex()+".json", b.Size, reader)
 					} else {
 						dockerSaver.AppendFileStream(b.Digest.Hex()+"/layer"+GetBlobSuffix(b), b.Size, reader)
 					}
 					found = true
-					break
 				} else {
-
 					begin := time.Now()
 					err = t.ids.PutABlob(ioutil.NopCloser(reader), b)
 					if err != nil {
 						return fmt.Errorf(I18n.Sprintf("Put blob %s(%v) to %s failed: %v", b.Digest, b.Size, t.ids.GetRegistry(), t.ids.GetRepository(), t.ids.GetTag(), err))
+					}
+					t.ctx.Debug(I18n.Sprintf("Put blob %s(%v) to %s success", ShortenString(b.Digest.String(), 19), FormatByteSize(b.Size), dstUrl))
+					t.ctx.StatUp(netBytes, time.Since(begin))
+					found = true
+				}
+			} else {
+				for k := range t.ctx.CompMeta.Datafiles {
+					reader = nil
+					netBytes = 0
+					if t.ctx.SquashfsTar != nil {
+						rawRdr, err := t.ctx.SquashfsTar.GetFileStream(b.Digest.Hex())
+						if err != nil {
+							return err
+						}
+						layerHash := sha256.New()
+						rsw := NewReaderSumWrapper(rawRdr)
+						io.Copy(layerHash, rsw)
+
+						reader, err = t.ctx.SquashfsTar.GetFileStream(b.Digest.Hex())
+						if err != nil {
+							return err
+						}
+
+						d, _ := digest.Parse("sha256:" + hex.EncodeToString(layerHash.Sum(nil)))
+						if b.Digest.Hex() != d.Hex() && dockerSaver == nil { // TODO avoid some failure cases, but not know why inconsist happened
+							log.Warnf("Update digest from %v to %v", b.Digest.Hex(), d.Hex())
+							log.Warnf("Update digest from %v to %v", b.Size, rsw.Size)
+							n := new(types.BlobInfo)
+							tmpBytes, _ := json.Marshal(b)
+							json.Unmarshal(tmpBytes, n)
+							n.Digest = d
+							n.Size = rsw.Size
+							start := bytes.Index(manifestByte, []byte(b.Digest.String()))
+							begIdx := bytes.LastIndex(manifestByte[0:start], []byte{'{'})
+							endIdx := bytes.Index(manifestByte[start:], []byte{'}'})
+							oldBytes := manifestByte[begIdx : start+endIdx]
+							newBytes := bytes.ReplaceAll(oldBytes, []byte(b.Digest.String()), []byte(n.Digest.String()))
+							newBytes = bytes.ReplaceAll(newBytes, []byte(fmt.Sprintf(": %v", b.Size)), []byte(fmt.Sprintf(": %v", n.Size)))
+							manifestByte = bytes.ReplaceAll(manifestByte, oldBytes, newBytes)
+							b = *n
+						}
 					} else {
-						t.ctx.Debug(I18n.Sprintf("Put blob %s(%v) to %s success", ShortenString(b.Digest.String(), 19), FormatByteSize(b.Size), dstUrl))
-						t.ctx.StatUp(netBytes, time.Since(begin))
+						r, err := NewImageCompressedTarReader(filepath.Join(t.path, k), t.ctx.CompMeta.Compressor)
+						if err != nil {
+							return err
+						}
+						defer r.Close()
+						rdr, name, size, eof, err := r.ReadFileStreamByName(b.Digest.Hex())
+						if eof {
+							// Incre dockerSave mode, consider eof as found
+							if dockerSaver != nil && t.ctx.DockerSaverBlobValidate {
+								found = true
+							}
+							continue
+						}
+						if err != nil {
+							return err
+						}
+						if size != b.Size {
+							return fmt.Errorf(I18n.Sprintf("Blob %s size mismatch, size in meta: %v, size in tar: %v", name, b.Size, size))
+						}
+						reader = rdr
+						netBytes = size
+					}
+
+					if reader == nil {
+						if dockerSaver != nil && t.ctx.DockerSaverBlobValidate {
+							found = true
+						}
+						continue
+					}
+
+					if dockerSaver != nil {
+						// Will not check blob exists in local
+						// TODO: Check in local docker by docker client
+						if i == 0 {
+							dockerSaver.AppendFileStream(b.Digest.Hex()+".json", b.Size, reader)
+						} else {
+							dockerSaver.AppendFileStream(b.Digest.Hex()+"/layer"+GetBlobSuffix(b), b.Size, reader)
+						}
 						found = true
 						break
+					} else {
+
+						begin := time.Now()
+						err = t.ids.PutABlob(ioutil.NopCloser(reader), b)
+						if err != nil {
+							return fmt.Errorf(I18n.Sprintf("Put blob %s(%v) to %s failed: %v", b.Digest, b.Size, t.ids.GetRegistry(), t.ids.GetRepository(), t.ids.GetTag(), err))
+						} else {
+							t.ctx.Debug(I18n.Sprintf("Put blob %s(%v) to %s success", ShortenString(b.Digest.String(), 19), FormatByteSize(b.Size), dstUrl))
+							t.ctx.StatUp(netBytes, time.Since(begin))
+							found = true
+							break
+						}
 					}
 				}
 			}

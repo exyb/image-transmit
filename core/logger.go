@@ -154,7 +154,7 @@ func InitLogger(logConfig []byte) {
 		logConfig = []byte(`
 <seelog>
     <outputs formatid="main">
-		<rollingfile type="size" filename="./data/log.txt" maxsize="10240000" maxrolls="5"/>
+		<rollingfile type="size" filename="./log/image-transmit-log.txt" maxsize="10240000" maxrolls="5"/>
     </outputs>
     <formats>
         <format id="main" format="%Date(2006-01-02 15:04:05.000) [%File.%Line] %LEV %Msg%n"/>
